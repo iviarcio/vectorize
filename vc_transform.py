@@ -3,7 +3,7 @@
 #
 # Modify AST nodes trying to vectorize the OpenCL kernels.
 # Look for inner loops that can be unrolled and assignments
-# with array locations can be replaced to vector statements.
+# with array locations that can be replaced to vector statements.
 #
 # Copyright (C) 2016, Marcio Machado Pereira
 # License: BSD
@@ -322,7 +322,7 @@ class vcTransform(object):
         _name = _ldefuse[0].vector_location
         # There are two cases where assignment uses dyadic operator
         # 1. There are a previous assignment to initialize location
-        #    In this case, a sinple assignment will be used
+        #    In this case, a simple assignment will be used
         # 2. We need to use the default (previous) value
         if not _ldefuse[0].has_initial_value:
             _op = '='
