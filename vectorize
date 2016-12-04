@@ -1,0 +1,136 @@
+#!/usr/bin/env python3
+# =================================================================
+# vectorize -- OpenCL kernel vectorize compiler
+#
+# This is the main program for the kernel vectorization compiler,
+# which just parses command-line options, figures out which source
+# files to read and write to, and invokes the different stages
+# of the compiler properly.
+#
+# Copyright (C) 2016, Marcio Machado Pereira
+# License: BSD
+# =================================================================
+
+import os
+import sys
+sys.path.append(os.environ['LLVM_INCLUDE_PATH'] + '/vectorize')
+
+from vc_parser import vcParser
+from vc_transform import vcTransform
+from vc_code import vcCode
+
+class Compiler:
+    """ This object encapsulates the compiler and serves as a
+        facade interface to the 'meat' of the compiler underneath.
+    """
+
+    class CompileError(Exception):
+        """ Exception raised when there's been a compilation error. """
+        pass
+
+    def __init__(self):
+        self.total_errors = 0
+        self.total_warnings = 0
+
+    def _parse(self, ast_file, debuglevel):
+        """ Parses the source code. If ast_file != None,
+            prints out the abstract syntax tree.
+        """
+        self.parser = vcParser()
+        self.ast = self.parser.parse(self.code, '', debuglevel)
+        if ast_file != None:
+            self.ast.show(buf=ast_file, showcoord=True)
+
+    def _transform(self, out_file, debuglevel):
+        """ Generate the OpenCl kernel from AST with vector statements. """
+        self.transform = vcTransform()
+        self.transform.visit(self.ast)
+        self.code = vcCode()
+        clcode = self.code.visit(self.ast)
+        if out_file != None:
+            out_file.write(clcode)
+
+    def _do_compile(self, out_file, ast_file, debuglevel):
+        """ Compiles the code to the given file object. """
+        self._parse(ast_file, debuglevel)
+        self._transform(out_file, debuglevel)
+
+    def _print_stats(self, silent):
+        """ Prints the total number of errors/warnings from compilation. """
+        if not silent:
+            print("<vectorize> %d errors, %d warnings." % (self.total_errors, self.total_warnings))
+
+    def compile(self, code, outfile, astfile, silent, debuglevel):
+        """ Compiles the given code string to the given file object. """
+        self.code = code
+        try:
+            self._do_compile(outfile, astfile, debuglevel)
+        except self.parser.ParseError:
+            if not silent:
+                print(",vectorize> Errors encountered.")
+            return False
+        except Compiler.CompileError:
+            self._print_stats(silent)
+            if not silent:
+                print("<vectorize> Errors encountered.")
+            return False
+        self._print_stats(silent)
+        if not silent:
+            print("<vectorize> Compile successful.")
+        return True
+
+
+def run_compiler():
+    """ Runs the command-line vectorize compiler. """
+    if len(sys.argv) < 2:
+        print("Usage: ./vectorize <source-file> [-silent] [-ast] [-debug]")
+        sys.exit(1)
+    show_ast = False
+    silent = False
+    debuglevel = 0
+    params = sys.argv[1:]
+    files = sys.argv[1:]
+    for param in params:
+        if param[0] == '-':
+            if param == '-ast':
+                show_ast = True
+            elif param == '-silent':
+                silent = True
+            elif param == '-debug':
+                debuglevel = 2
+            else:
+                print("<vectorize> Unknown option: %s" % param)
+                sys.exit(1)
+            files.remove(param)
+    for file in files:
+        if file[-3:] == '.cl':
+            out_filename = file
+        else:
+            out_filename = file + '.cl'
+        source_filename = out_filename[:-3] + '.tmp'
+        os.rename(out_filename, source_filename)
+        source = open(source_filename, 'r')
+        code = source.read()
+        source.close()
+        open_files = []
+        ast_file = None
+        if show_ast:
+            ast_filename = out_filename[:-3] + '.ast'
+            print("Outputting the Abstract Syntax Tree to %s." % ast_filename)
+            ast_file = open(ast_filename, 'w')
+            open_files.append(ast_file)
+        out_file = open(out_filename, 'w')
+        open_files.append(out_file)
+        retval = Compiler().compile(code, out_file, ast_file, silent, debuglevel)
+        for f in open_files:
+            f.close()
+        if retval:
+            sys.exit(retval)
+        else:
+            if not silent:
+                print("Was not possible to vectorize the kernel file!")
+            os.rename(source_filename, out_filename)
+    sys.exit(retval)
+
+if __name__ == '__main__':
+    run_compiler()
