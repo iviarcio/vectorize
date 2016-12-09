@@ -13,11 +13,12 @@ import copy
 import vc_ast
 from vc_ast import *
 
+
 class DefUseChain(dict):
-    """ Class representing ArrayRef locations, its definition
-        and all statements where locations are used.
-        The class should provide functionality for adding
-        and looking up nodes associated with identifiers.
+    """ Class representing ArrayRef locations. The class should
+        provide functionality for adding and looking up nodes
+        associated with identifiers. In its definition one can
+        find the statements where locations are used.
     """
     def __init__(self):
         super().__init__()
@@ -27,8 +28,9 @@ class DefUseChain(dict):
         self[name] = [value]
 
     def lookup(self, name):
-        # Returns the defuse of a name
+        # Returns the definition of a name
         return self.get(name, None)
+
 
 class vcTransform(object):
     """ Uses the same visitor pattern as vc_ast.NodeVisitor.
@@ -90,8 +92,6 @@ class vcTransform(object):
     def add_definition(self, name, value):
         """ Add declare names and its object """
         self.peek().add(name, value)
-        # Set vector location associated with current Array location to None
-        value.vector_location = None
 
     def lookup(self, name):
         for scope in reversed(self.stack):
@@ -305,10 +305,13 @@ class vcTransform(object):
         elif type(n) == ArrayRef:
             _ldefuse = self.lookup(self.visit(n))
             _ldefuse.append(n)
-            if _ldefuse[0].vector_location is None:
-                # Create a vector location
+            _name = self.get_vector_location(n)
+            if not _name:
+                # Create a new vector location
                 _name = self.create_vector_location()
-                _ldefuse[0].vector_location = _name
+                 # Associate the vector_location with ArrayRef expression
+                _ldefuse[0].vector_locs.append((_name, n))
+                # insert a declaration for the vector_location on AST
                 self.insert_decl(_name, _ldefuse)
         else:
             return
@@ -317,9 +320,10 @@ class vcTransform(object):
         _loc = n.lvalue
         _rval = n.rvalue
         _op = n.op
-        # get the vector location associated with lvalue
+        # get the decl stmt of location used in lvalue
         _ldefuse = self.lookup(self.visit(_loc.name))
-        _name = _ldefuse[0].vector_location
+        # get the vector_location associated with lvalue
+        _name = self.get_vector_location(_loc)
         # There are two cases where assignment uses dyadic operator
         # 1. There are a previous assignment to initialize location
         #    In this case, a simple assignment will be used
@@ -352,8 +356,8 @@ class vcTransform(object):
         elif type(n) == UnaryOp:
             return vc_ast.UnaryOp(n.op, self.generate_r_stmt(n.expr))
         elif type(n) == ArrayRef:
-            _ldefuse = self.lookup(self.visit(n.name))
-            _name = _ldefuse[0].vector_location
+            # get the vector_loation associated with n stmt
+            _name = self.get_vector_location(n)
             _iname = self.induction_var[0].name
             _depend, _op = self.induction_var_dependence(n.subscript, _iname)
             if (not _depend) or (_depend and (_op == '+')):
@@ -362,11 +366,23 @@ class vcTransform(object):
                 self.create_multiple_assignments_for(n, _name, _iname)
             return vc_ast.ID(_name)
         elif type(n) == Constant:
-            if n.vector_location is None:
+            _name = self.get_vector_location(n)
+            if not _name:
                 _name = self.create_vector_location()
                 self.insert_cte_decl(_name, n.type, n.value)
-                n.vector_location = _name
-            return vc_ast.ID(n.vector_location)
+                n.vector_locs.append((_name, n))
+            return vc_ast.ID(_name)
+
+    def get_vector_location(self, n):
+        if type(n) == Constant:
+            for _name, _ in n.vector_locs:
+                return _name
+        else:
+            _defuse = self.lookup(self.visit(n.name))
+            for _name, _stmt in _defuse[0].vector_locs:
+                if _stmt == n:
+                    return _name
+        return None
 
     def swap_for(self, n, start):
         _stmts = n.block_items
@@ -381,7 +397,7 @@ class vcTransform(object):
                 for st in self.refact_stmts:
                     _stmts.insert(_index,st)
                     _index += 1
-                # cleanup refact_stmts without destroy such stmts
+                # cleanup refactor stmts without destroy such stmts
                 self.refact_stmts = []
             else:
                 _done = self.swap_for(_for.stmt, 0)
@@ -405,7 +421,7 @@ class vcTransform(object):
             _stmts = n.block_items
             _index = start
             while True:
-                if (_index < len(_stmts)):
+                if _index < len(_stmts):
                     if type(_stmts[_index]) == For:
                         self.remove_if_and_barrier_stmts(_stmts[_index].stmt, 0)
                     elif (type(_stmts[_index]) == If) or (type(_stmts[_index]) == FuncCall):
@@ -620,10 +636,12 @@ class vcTransform(object):
                 _ldefuse = self.lookup(self.visit(_loc))
                 _ldefuse.append(n)
                 if n.refactor:
-                    if _ldefuse[0].vector_location is None:
-                        # Create a vector location
+                    _name = self.get_vector_location(_loc)
+                    if not _name:
+                        # Create a new vector location
                         _name = self.create_vector_location()
-                        _ldefuse[0].vector_location = _name
+                        # Associate this vector_location with ArrayRef expression
+                        _ldefuse[0].vector_locs.append((_name,_loc))
                         # Check if lvalue does not depend of induction_var
                         if self.induction_var is not None:
                             _iname = self.induction_var[0].name
@@ -632,9 +650,9 @@ class vcTransform(object):
                             _depend = False
                         # Check if assignment operation is dyadic
                         _dyadic = self.is_dyadic_operator(_op)
-                        # look for initialization
+                        # look for some initialization
                         _init = _dyadic and not _depend
-                        # Insert a Decl stmt to the vector location
+                        # Insert a Decl stmt for the vector location in AST
                         self.insert_decl(_name, _ldefuse, _init)
             if n.refactor:
                 if (type(_rval) == Constant) and (_ldefuse is not None):
