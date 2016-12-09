@@ -252,7 +252,7 @@ class vcTransform(object):
 
     def insert_cte_decl(self, name, ctype, value):
         # create a constant vector declaration
-        _cte = vc_ast.Constant(ctype,value)
+        _cte = vc_ast.Constant(ctype, value)
         _initlist = vc_ast.InitList(
             exprs=[_cte, _cte, _cte, _cte])
         _declaration = vc_ast.Decl(
@@ -320,8 +320,9 @@ class vcTransform(object):
         _loc = n.lvalue
         _rval = n.rvalue
         _op = n.op
-        # get the decl stmt of location used in lvalue
+        # get the decl stmt & raw type of location used in lvalue
         _ldefuse = self.lookup(self.visit(_loc.name))
+        _typename = self.get_raw_type(_ldefuse[0])
         # get the vector_location associated with lvalue
         _name = self.get_vector_location(_loc)
         # There are two cases where assignment uses dyadic operator
@@ -333,7 +334,7 @@ class vcTransform(object):
         # note that the order of next two stmts are important
         # create refact stmts for variables present in rvalue
         # The refact_stmts will be inserted after 'for' stmt
-        _rvalue = self.generate_r_stmt(_rval)
+        _rvalue = self.generate_r_stmt(_rval, _typename)
         # create refact stmt for lvalue (loc)
         _lvalue = self.generate_l_stmt(_loc, _name, _op)
         self.refact_stmts.append(vc_ast.Assignment(n.op, _lvalue, _rvalue))
@@ -348,13 +349,13 @@ class vcTransform(object):
         self.result_stmt.append(vc_ast.Assignment(op, lvalue, _rvalue))
         return vc_ast.ID(rname)
 
-    def generate_r_stmt(self, n):
+    def generate_r_stmt(self, n, ltype):
         if type(n) == BinaryOp:
-            _lnode = self.generate_r_stmt(n.left)
-            _rnode = self.generate_r_stmt(n.right)
+            _lnode = self.generate_r_stmt(n.left, ltype)
+            _rnode = self.generate_r_stmt(n.right, ltype)
             return vc_ast.BinaryOp(n.op, _lnode, _rnode)
         elif type(n) == UnaryOp:
-            return vc_ast.UnaryOp(n.op, self.generate_r_stmt(n.expr))
+            return vc_ast.UnaryOp(n.op, self.generate_r_stmt(n.expr, ltype))
         elif type(n) == ArrayRef:
             # get the vector_loation associated with n stmt
             _name = self.get_vector_location(n)
@@ -369,13 +370,15 @@ class vcTransform(object):
             _name = self.get_vector_location(n)
             if not _name:
                 _name = self.create_vector_location()
-                self.insert_cte_decl(_name, n.type, n.value)
-                n.vector_locs.append((_name, n))
+                # Sometimes the type of cte (e.g. int) is used in op with another type
+                # So, the type of constant must be adjusted for type used during expr
+                self.insert_cte_decl(_name, ltype, n.value)
+                n.vector_locs.append(_name)
             return vc_ast.ID(_name)
 
     def get_vector_location(self, n):
         if type(n) == Constant:
-            for _name, _ in n.vector_locs:
+            for _name in n.vector_locs:
                 return _name
         else:
             _defuse = self.lookup(self.visit(n.name))
@@ -383,6 +386,18 @@ class vcTransform(object):
                 if _stmt == n:
                     return _name
         return None
+
+    def check_loop_nest(self, stmt, father):
+        if type(stmt) == For:
+            if stmt.remove:
+                father.stmt = vc_ast.Compound(self.refact_stmts)
+                self.refact_stmts = []
+                return True
+            else:
+                return self.check_loop_nest(stmt.stmt, stmt)
+        elif type(stmt) == Compound:
+            return self.swap_for(stmt, 0)
+        return False
 
     def swap_for(self, n, start):
         _stmts = n.block_items
@@ -395,12 +410,12 @@ class vcTransform(object):
                 # replace the "for" with the refact_stmts list
                 _stmts.pop(_index)
                 for st in self.refact_stmts:
-                    _stmts.insert(_index,st)
+                    _stmts.insert(_index, st)
                     _index += 1
-                # cleanup refactor stmts without destroy such stmts
+                # cleanup refactor stmts without destroy them
                 self.refact_stmts = []
             else:
-                _done = self.swap_for(_for.stmt, 0)
+                _done = self.check_loop_nest(_for.stmt, _for)
                 if not _done:
                     _done = self.swap_for(n, _index + 1)
                 return _done
