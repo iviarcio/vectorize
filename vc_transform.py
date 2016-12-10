@@ -59,6 +59,9 @@ class vcTransform(object):
             insertion of vector statements
         param: result_stmt:
             statement that compute assignment associated to refactoring
+        param: result_position
+            In case of inner loops, this parameter points to for stmt
+            that we willl insert the result_stmt. Otherwise equals None
         param: vectorid:
             Index of vector locations. These locations has the form
             _ftn where n equals the vectorid
@@ -76,6 +79,7 @@ class vcTransform(object):
         self.block_stmt = []
         self.refact_stmts = []
         self.result_stmt = []
+        self.result_position = None
         self.vectorid = 0
         self.inside_region = False
         self.vector_type = {'int': 'int4', 'long': 'long4', 'float': 'float4', 'double': 'double4'}
@@ -387,16 +391,24 @@ class vcTransform(object):
                     return _name
         return None
 
-    def check_loop_nest(self, stmt, father):
+    def check_loop_nest(self, stmt, previous, root):
         if type(stmt) == For:
             if stmt.remove:
-                father.stmt = vc_ast.Compound(self.refact_stmts)
+                previous.stmt = vc_ast.Compound(block_items=self.refact_stmts)
                 self.refact_stmts = []
+                # set for stmt that will receive result_stmt
+                self.result_position = root
                 return True
             else:
-                return self.check_loop_nest(stmt.stmt, stmt)
+                _done = self.check_loop_nest(stmt.stmt, stmt, previous)
+                if _done and not self.result_position:
+                    self.result_position = previous
+                return _done
         elif type(stmt) == Compound:
-            return self.swap_for(stmt, 0)
+            _done = self.swap_for(stmt, 0)
+            if _done and not self.result_position:
+                self.result_position = root
+            return _done
         return False
 
     def swap_for(self, n, start):
@@ -414,8 +426,9 @@ class vcTransform(object):
                     _index += 1
                 # cleanup refactor stmts without destroy them
                 self.refact_stmts = []
+                return True
             else:
-                _done = self.check_loop_nest(_for.stmt, _for)
+                _done = self.check_loop_nest(_for.stmt, _for, n)
                 if not _done:
                     _done = self.swap_for(n, _index + 1)
                 return _done
@@ -448,11 +461,23 @@ class vcTransform(object):
                     return
 
     def append_result_stmt(self, n):
-        # append result stmt after "refactored" for stmt
-        for stmt in self.result_stmt:
-            n.block_items.append(stmt)
+        if not self.result_position:
+            # append result stmt after "refactored" for stmt
+            for stmt in self.result_stmt:
+                n.block_items.append(stmt)
+        else:
+            _pos = self.result_position.stmt
+            if type(_pos) == Compound:
+                for stmt in self.result_stmt:
+                    _pos.block_items.append(stmt)
+            else:
+                _block_items = [_pos]
+                for stmt in self.result_stmt:
+                    _block_items.append(stmt)
+                self.result_position.stmt = vc_ast.Compound(block_items=_block_items)
         self.result_stmt = []
-        
+        self.result_position = None
+
     def loop_invariant_code_motion(self, n):
         """
         Move to outside, stmts inside loops that are independent
@@ -527,7 +552,8 @@ class vcTransform(object):
             self.remove_if_and_barrier_stmts(n.body, 0)
             # navigate through body to replace 'selected for' stmt
             self.swap_for(n.body, 0)
-            # next, append result_stmt in the final of body of kernel
+            # next, append result_stmt. Normally it goes to the final
+            # of kernel's body, unless the removed for is a loop nest
             self.append_result_stmt(n.body)
             # finally, execute loop invariant code motion
             self.loop_invariant_code_motion(n.body)
