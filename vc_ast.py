@@ -818,6 +818,12 @@ class Pragma(Node):
         self.string = string
         self.coord = coord
 
+    def children(self):
+        nodelist = []
+        return tuple(nodelist)
+
+    attr_names = ('string', )
+
 
 class Define(Node):
     def __init__(self, string, coord=None):
