@@ -465,16 +465,16 @@ class vcTransform(object):
             # append result stmt after "refactored" for stmt
             for stmt in self.result_stmt:
                 n.block_items.append(stmt)
+        elif type(self.result_position) == Compound:
+            # also append result stmt after "refactored" for stmt
+            for stmt in self.result_stmt:
+                self.result_position.block_items.append(stmt)
         else:
             _pos = self.result_position.stmt
-            if type(_pos) == Compound:
-                for stmt in self.result_stmt:
-                    _pos.block_items.append(stmt)
-            else:
-                _block_items = [_pos]
-                for stmt in self.result_stmt:
-                    _block_items.append(stmt)
-                self.result_position.stmt = vc_ast.Compound(block_items=_block_items)
+            _block_items = [_pos]
+            for stmt in self.result_stmt:
+                _block_items.append(stmt)
+            self.result_position.stmt = vc_ast.Compound(block_items=_block_items)
         self.result_stmt = []
         self.result_position = None
 
