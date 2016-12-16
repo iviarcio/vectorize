@@ -53,15 +53,15 @@ class vcTransform(object):
         param: induction_var:
             Induction var object of loop candidate to refactoring
         param: refact_stmts:
-            list of statements that will replace the loop statement
+            List of statements that will replace the loop statement
         param: block_stmt:
             Entry point in kernel function used to find position for
             insertion of vector declaration statements
         param: result_stmt:
-            pair of statement that compute assignment associated to
+            Pair of statement that compute assignment associated to
             refactoring and stmt that will define the result position
-        param: init_stmt:
-            Vector initialization stmt, when it is apart of decl stmt
+        param: init_stmts:
+            Pair of vector initialization stmt and its position
         param: position
             Simulate a stack of stmts where vector initialization and
             result statement must be inserted.
@@ -70,6 +70,9 @@ class vcTransform(object):
             _ftn where n equals the vector_id
         param: loop_candidate:
             Indicates the for stmt that are candidate to be vectorized
+        param: declarations:
+            list of declarations that will be inserted after kernel
+            declarations.
         param: vector_type:
             A dictionary that maps raw types to vector types.
         """
@@ -81,8 +84,9 @@ class vcTransform(object):
         self.block_stmt = []
         self.refact_stmts = []
         self.result_stmt = []
-        self.init_stmt = None
+        self.init_stmts = []
         self.position = []
+        self.declarations = []
         self.vector_id = 0
         self.loop_candidate = None
         self.vector_type = {'int': 'int4', 'long': 'long4', 'float': 'float4', 'double': 'double4'}
@@ -256,13 +260,24 @@ class vcTransform(object):
             quals=None,
             type=self.create_identifier(vdecl))
 
-    def insert_stmt(self, n):
-        # insert the stmt into kernel body
+    def insert_declaration_stmts(self):
+        # insert the declaration stmts into kernel body
         _block_items = self.block_stmt.block_items
         _index = 0
         while type(_block_items[_index]) == Decl:
             _index += 1
-        _block_items.insert(_index, n)
+        _block_items[_index:_index] = self.declarations
+        self.declarations = []
+
+    def insert_initializations(self):
+        if self.init_stmts:
+            for _st, _pos in self.init_stmts:
+                if type(_pos) == For:
+                    if type(_pos.stmt) == Compound:
+                        _stmts = _pos.stmt.block_items
+                        _stmts.insert(0, _st)
+                    else:
+                        _pos.stmt = vc_ast.Compound(block_items=[_st, _pos.stmt])
 
     def insert_cte_decl(self, name, ctype, value):
         # create a constant vector declaration
@@ -284,8 +299,8 @@ class vcTransform(object):
             coord=None)
         # set visited flag equals true for this decl stmt
         _declaration.visited = True
-        # insert the constant declaration into kernel body
-        self.insert_stmt(_declaration)
+        # append constant declaration to be inserted into kernel body
+        self.declarations.append(_declaration)
 
     def create_init_assignment(self, name, defuse_loc):
         """
@@ -327,10 +342,20 @@ class vcTransform(object):
                     if _index < len(_stmts):
                         _init_assignment = self.create_init_assignment(name, defuse_loc)
                         _stmts.pop(_index)
-                        _stmts.insert(_index, _init_assignment )
+                        _stmts.insert(_index, _init_assignment)
                         return False
             return True
-        return False
+        else:
+            # There is no explicity initial value. However, dyadic operator was used
+            # in the assignment inside current for stmt. In this case, if the father
+            # if a for stmt, an initialization must be created there. Otherwise, returns
+            # true and a declaration will be created with initialization.
+            _pos = self.position[-2]
+            if type (_pos) == For:
+                _init_assignment = self.create_init_assignment(name, defuse_loc)
+                self.init_stmts.append((_init_assignment , _pos))
+                return False
+            return True
 
     def insert_decl(self, name, defuse_loc, init=False):
         _init_on_declaration = False
@@ -361,7 +386,8 @@ class vcTransform(object):
             coord=None)
 
         _declaration.visited = True
-        self.insert_stmt(_declaration)
+        self.declarations.append(_declaration)
+        #self.insert_stmt(_declaration)
 
     def generate_expr(self, n):
         if type(n) == BinaryOp:
@@ -500,7 +526,8 @@ class vcTransform(object):
                 if self.is_dyadic_operator(n.op):
                     # In this case, we will preserve the stmt,
                     # copying to outside loop stmt
-                    self.insert_stmt(copy.deepcopy(n))
+                    self.declarations.append(copy.deepcopy(n))
+                    # self.insert_stmt(copy.deepcopy(n))
                 return True
         return False
 
@@ -617,6 +644,10 @@ class vcTransform(object):
             # finally, navigate through body to remove marked if stmts
             # and also unnecessary barriers
             self.remove_if_and_barrier_stmts(n.body, 0)
+            # insert declarations
+            self.insert_declaration_stmts()
+            # insert initialization stmts
+            self.insert_initializations()
             self.pop_stack()
 
     def visit_FuncCall(self,n):
@@ -647,9 +678,9 @@ class vcTransform(object):
                 if not _stmt.visited:
                     if type(_stmt) == Decl:
                         self.add_definition(_stmt.name, _stmt)
+                        _stmt.visited = True
                     else:
                         self.visit_stmt(_stmt)
-                    _stmt.visited = True
             else:
                 self.visit_stmt(_stmt)
             _index += 1
@@ -661,16 +692,7 @@ class vcTransform(object):
         """
         if type(n) == For:
             self.visit_For(n)
-            if self.init_stmt:
-                _pos = self.position[-1]
-                _stmt = _pos.stmt
-                if not (type(_stmt) == Compound):
-                    _stmt = vc_ast.Compound (
-                        block_items=[_pos.stmt])
-                _stmt.block_items.insert(0, self.init_stmt)
-                _pos.stmt = _stmt
             self.loop_candidate = None
-            self.init_stmt = None
         else:
             self.visit(n)
 
