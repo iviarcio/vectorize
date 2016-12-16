@@ -46,9 +46,9 @@ class vcTransform(object):
         param: success:
             Flag that indicates if vectorize was done successfully
         param: stack:
-            Stack of defuselist. This is necessary because AST file
+            Stack of defuse_list. This is necessary because AST file
             may contain more than one kernel (with same loc names)
-        param: defuselist:
+        param: defuse_list:
             Symbol table for typedefs and array symbols in the kernel
         param: induction_var:
             Induction var object of loop candidate to refactoring
@@ -56,46 +56,49 @@ class vcTransform(object):
             list of statements that will replace the loop statement
         param: block_stmt:
             Entry point in kernel function used to find position for
-            insertion of vector statements
+            insertion of vector declaration statements
         param: result_stmt:
-            statement that compute assignment associated to refactoring
-        param: result_position
-            In case of inner loops, this parameter points to for stmt
-            that we willl insert the result_stmt. Otherwise equals None
-        param: vectorid:
+            pair of statement that compute assignment associated to
+            refactoring and stmt that will define the result position
+        param: init_stmt:
+            Vector initialization stmt, when it is apart of decl stmt
+        param: position
+            Simulate a stack of stmts where vector initialization and
+            result statement must be inserted.
+        param: vector_id:
             Index of vector locations. These locations has the form
-            _ftn where n equals the vectorid
-        param: inside_region:
-            Indicates that the next stmt (possible a compound stmt)
-            are inside the 'selected loop' to be vectorized.
+            _ftn where n equals the vector_id
+        param: loop_candidate:
+            Indicates the for stmt that are candidate to be vectorized
         param: vector_type:
             A dictionary that maps raw types to vector types.
         """
         self.success = False
         self.stack = []
-        self.defuselist = DefUseChain()
-        self.stack.append(self.defuselist)
+        self.defuse_list = DefUseChain()
+        self.stack.append(self.defuse_list)
         self.induction_var = None
         self.block_stmt = []
         self.refact_stmts = []
         self.result_stmt = []
-        self.result_position = None
-        self.vectorid = 0
-        self.inside_region = False
+        self.init_stmt = None
+        self.position = []
+        self.vector_id = 0
+        self.loop_candidate = None
         self.vector_type = {'int': 'int4', 'long': 'long4', 'float': 'float4', 'double': 'double4'}
 
-    def push(self, enclosure):
+    def push_stack(self, enclosure):
         self.stack.append(DefUseChain())
 
-    def pop(self):
+    def pop_stack(self):
         self.stack.pop()
 
-    def peek(self):
+    def peek_stack(self):
         return self.stack[-1]
 
     def add_definition(self, name, value):
         """ Add declare names and its object """
-        self.peek().add(name, value)
+        self.peek_stack().add(name, value)
 
     def lookup(self, name):
         for scope in reversed(self.stack):
@@ -105,8 +108,8 @@ class vcTransform(object):
         return None
 
     def create_vector_location(self):
-        _name = "_ft" + str(self.vectorid)
-        self.vectorid += 1
+        _name = "_ft" + str(self.vector_id)
+        self.vector_id += 1
         return _name
 
     def remove_induction_var(self, iname, n):
@@ -145,7 +148,7 @@ class vcTransform(object):
             return vc_ast.ArrayRef(n.name,self.swap_induction_var_to(iname, ival, n.subscript))
         elif type(n) == BinaryOp:
             _left = type(n.left)
-            _right = type (n.right)
+            _right = type(n.right)
             if (_right == ID) and (n.right.name == iname):
                 if ival == '1':
                     return n.left
@@ -168,22 +171,22 @@ class vcTransform(object):
         _expr = self.remove_induction_var(iname, n)
         _args = vc_ast.ExprList([vc_ast.Constant('int', '0'), vc_ast.UnaryOp('&',_expr)])
         _call = vc_ast.FuncCall(vc_ast.ID('vload4'), _args)
-        self.refact_stmts.append(vc_ast.Assignment('=', vc_ast.ID(name), _call))
+        self.refact_stmts.append((vc_ast.Assignment('=', vc_ast.ID(name), _call), self.loop_candidate))
 
     def create_multiple_assignments_for(self, n, name, iname):
         _lid = vc_ast.ID(name)
         _x = vc_ast.StructRef(_lid,'.',vc_ast.ID('x'))
         _expr = self.remove_induction_var(iname, copy.deepcopy(n))
-        self.refact_stmts.append(vc_ast.Assignment('=', _x, _expr))
+        self.refact_stmts.append((vc_ast.Assignment('=', _x, _expr), self.loop_candidate))
         _y = vc_ast.StructRef(_lid,'.',vc_ast.ID('y'))
         _expr = self.swap_induction_var_to(iname, '1', copy.deepcopy(n))
-        self.refact_stmts.append(vc_ast.Assignment('=', _y, _expr))
+        self.refact_stmts.append((vc_ast.Assignment('=', _y, _expr), self.loop_candidate))
         _z = vc_ast.StructRef(_lid,'.',vc_ast.ID('z'))
         _expr = self.swap_induction_var_to(iname, '2', copy.deepcopy(n))
-        self.refact_stmts.append(vc_ast.Assignment('=', _z, _expr))
+        self.refact_stmts.append((vc_ast.Assignment('=', _z, _expr), self.loop_candidate))
         _w = vc_ast.StructRef(_lid,'.',vc_ast.ID('w'))
         _expr = self.swap_induction_var_to(iname, '3', copy.deepcopy(n))
-        self.refact_stmts.append(vc_ast.Assignment('=', _w, _expr))
+        self.refact_stmts.append((vc_ast.Assignment('=', _w, _expr), self.loop_candidate))
 
     def induction_var_dependence(self, n, iname):
         # return True if the Array var subscript depends on induction_var
@@ -203,7 +206,8 @@ class vcTransform(object):
         else:
             return False, ''
 
-    def is_dyadic_operator(self, op):
+    @staticmethod
+    def is_dyadic_operator(op):
         return (op == '+=') or (op == '-=') or (op == '*=') or (op == '/=')
 
     def get_raw_type(self, decl):
@@ -221,30 +225,36 @@ class vcTransform(object):
         # Otherwise
         return None
 
-    def get_init_val(self, hostloc):
-        # Normally, if Array location is initialized, it's the
-        # first assign statement with some cte value. Otherwise
-        # the default value is used, but in this case, dyadic
-        # operator must be used in final assignment
-        if len(hostloc) > 2:
-            _loc = hostloc[1]
-            if type(_loc) == Assignment:
-                if _loc.op == '=':
-                    if type(_loc.rvalue) == Constant:
-                        return _loc.rvalue.value
-        # signals that location must preserve initial value
-        hostloc[0].has_initial_value = True
+    def get_init_stmt(self, defuse_loc):
+        if len(defuse_loc) > 2:
+            _stmt = defuse_loc[1]
+            if type(_stmt) == Assignment:
+                if _stmt.op == '=' and type(_stmt.rvalue) == Constant:
+                    return _stmt
+        return None
+
+    def get_init_val(self, defuse_loc):
+        # If the array location was initialized, then the
+        # first assign statement contains the init value.
+        # If the value is not constant, a default value is
+        # used instead, but in this case, the dyadic
+        # operator must be reserved in final assignment
+        _stmt = self.get_init_stmt(defuse_loc)
+        if _stmt:
+            return _stmt.rvalue.value
+        # else, signals that location must preserve initial value
+        defuse_loc[0].has_initial_value = True
         return '0.'
 
-    def get_typeid_for(self, decl):
+    def create_identifier(self, decl):
         return vc_ast.IdentifierType(
             names=[self.vector_type[self.get_raw_type(decl)]])
 
-    def get_typedecl_for(self, name, vdecl):
+    def create_typedecl(self, name, vdecl):
         return vc_ast.TypeDecl(
             declname=name,
             quals=None,
-            type=self.get_typeid_for(vdecl))
+            type=self.create_identifier(vdecl))
 
     def insert_stmt(self, n):
         # insert the stmt into kernel body
@@ -277,27 +287,80 @@ class vcTransform(object):
         # insert the constant declaration into kernel body
         self.insert_stmt(_declaration)
 
-    def insert_decl(self, name, hostloc, init=False):
+    def create_init_assignment(self, name, defuse_loc):
+        """
+             Assignment: =
+              ID: 'name'
+              Cast:
+                Typename: None, []
+                  TypeDecl: None, []
+                    IdentifierType: ['float4']
+                Constant: float, 'init'
+        """
+        _lvalue = vc_ast.ID(name=name)
+        _rvalue = vc_ast.Cast(
+            to_type=vc_ast.Typename(
+                name=None,
+                quals=None,
+                type=self.create_typedecl(None, defuse_loc[0])),
+            expr=vc_ast.Constant(
+                type=self.get_raw_type(defuse_loc[0]),
+                value=self.get_init_val(defuse_loc)))
+        return vc_ast.Assignment(
+            op='=',
+            lvalue=_lvalue,
+            rvalue=_rvalue)
+
+    def treat_init_assignment(self, name, defuse_loc):
+        _for_stmt = self.position[-1]
+        _init_stmt = self.get_init_stmt(defuse_loc)
+        if _init_stmt:
+            _loc = _init_stmt.lvalue
+            _i_var = self.lookup(_for_stmt.init.decls[0].name)
+            _depend, _ = self.induction_var_dependence(_loc.subscript, _i_var[0].name)
+            if _depend:
+                if type(_for_stmt.stmt) == Compound:
+                    _stmts = _for_stmt.stmt.block_items
+                    _index = 0
+                    while (_index < len(_stmts)) and not (_stmts[_index] == _init_stmt):
+                        _index += 1
+                    if _index < len(_stmts):
+                        _init_assignment = self.create_init_assignment(name, defuse_loc)
+                        _stmts.pop(_index)
+                        _stmts.insert(_index, _init_assignment )
+                        return False
+            return True
+        return False
+
+    def insert_decl(self, name, defuse_loc, init=False):
+        _init_on_declaration = False
         if init:
-            _val=self.get_init_val(hostloc)
-            _cte=vc_ast.Constant(
-                type=self.get_raw_type(hostloc[0]),
+            # seek for assignment where initialization occurs
+            # test if assignment is induction var dependence
+            # if no, the initialization is done on decl stmt
+            # if yes, the init assignment will be replaced
+            _init_on_declaration = self.treat_init_assignment(name, defuse_loc)
+
+        if _init_on_declaration:
+            _val = self.get_init_val(defuse_loc)
+            _cte = vc_ast.Constant(
+                type=self.get_raw_type(defuse_loc[0]),
                 value=_val)
-            _initlist=vc_ast.InitList(
-                exprs=[_cte, _cte, _cte, _cte])
+            _initlist = vc_ast.InitList(exprs=[_cte, _cte, _cte, _cte])
         else:
-            _initlist=None
+            _initlist = None
+
         _declaration = vc_ast.Decl(
             name=name,
             quals=None,
             storage=['__private'],
             funcspec=None,
-            type=self.get_typedecl_for(name, hostloc[0]),
+            type=self.create_typedecl(name, defuse_loc[0]),
             init=_initlist,
             bitsize=None,
             coord=None)
-        # set visited flag equals true for this decl stmt
-        _declaration.visited=True
+
+        _declaration.visited = True
         self.insert_stmt(_declaration)
 
     def generate_expr(self, n):
@@ -337,11 +400,11 @@ class vcTransform(object):
             _op = '='
         # note that the order of next two stmts are important
         # create refact stmts for variables present in rvalue
-        # The refact_stmts will be inserted after 'for' stmt
+        # The refact_stmts will be swap with 'for' stmt
         _rvalue = self.generate_r_stmt(_rval, _typename)
         # create refact stmt for lvalue (loc)
         _lvalue = self.generate_l_stmt(_loc, _name, _op)
-        self.refact_stmts.append(vc_ast.Assignment(n.op, _lvalue, _rvalue))
+        self.refact_stmts.append((vc_ast.Assignment(n.op, _lvalue, _rvalue), self.loop_candidate))
 
     def generate_l_stmt(self, lvalue, rname, op):
         _rid = vc_ast.ID(rname)
@@ -350,7 +413,7 @@ class vcTransform(object):
         _z = vc_ast.StructRef (_rid,'.',vc_ast.ID('z'))
         _w = vc_ast.StructRef (_rid,'.',vc_ast.ID('w'))
         _rvalue = vc_ast.BinaryOp('+', vc_ast.BinaryOp('+', vc_ast.BinaryOp('+', _x, _y), _z), _w)
-        self.result_stmt.append(vc_ast.Assignment(op, lvalue, _rvalue))
+        self.result_stmt.append((vc_ast.Assignment(op, lvalue, _rvalue), self.position[-2]))
         return vc_ast.ID(rname)
 
     def generate_r_stmt(self, n, ltype):
@@ -391,27 +454,23 @@ class vcTransform(object):
                     return _name
         return None
 
-    def check_loop_nest(self, stmt, previous, root):
+    def check_loop_nest(self, stmt, previous):
         if type(stmt) == For:
             if stmt.remove:
-                previous.stmt = vc_ast.Compound(block_items=self.refact_stmts)
-                self.refact_stmts = []
-                # set for stmt that will receive result_stmt
-                self.result_position = root
+                _block_items = []
+                for st, candidate in self.refact_stmts:
+                    if candidate == stmt:
+                        _block_items.append(st)
+                previous.stmt = vc_ast.Compound(block_items=_block_items)
                 return True
             else:
-                _done = self.check_loop_nest(stmt.stmt, stmt, previous)
-                if _done and not self.result_position:
-                    self.result_position = previous
-                return _done
+                return self.check_loop_nest(stmt.stmt, stmt)
         elif type(stmt) == Compound:
-            _done = self.swap_for(stmt, 0)
-            if _done and not self.result_position:
-                self.result_position = root
-            return _done
+            return self.swap_for(stmt, 0)
         return False
 
     def swap_for(self, n, start):
+        _done = False
         _stmts = n.block_items
         _index = start
         while (_index < len(_stmts)) and (type(_stmts[_index]) is not For):
@@ -420,19 +479,20 @@ class vcTransform(object):
             _for = _stmts[_index]
             if _for.remove:
                 # replace the "for" with the refact_stmts list
+                # with loop_candidate equals current for
                 _stmts.pop(_index)
-                for st in self.refact_stmts:
-                    _stmts.insert(_index, st)
-                    _index += 1
-                # cleanup refactor stmts without destroy them
-                self.refact_stmts = []
-                return True
+                for st, candidate in self.refact_stmts:
+                    if candidate == _for:
+                        _stmts.insert(_index, st)
+                        _index += 1
+                _done = _index >= len(_stmts)
+                if not _done:
+                    _done = self.swap_for(n, _index)
             else:
-                _done = self.check_loop_nest(_for.stmt, _for, n)
+                _done = self.check_loop_nest(_for.stmt, _for)
                 if not _done:
                     _done = self.swap_for(n, _index + 1)
-                return _done
-        return False
+        return _done
 
     def check_init_for_result_loc(self, n):
         if type(n) == Assignment:
@@ -456,27 +516,25 @@ class vcTransform(object):
                         if _stmts[_index].remove:
                             # remove 'barrier' or if stmt (and all it's children)
                             _stmts.pop(_index)
+                            _index -= 1
                     _index += 1
                 else:
                     return
+        elif type(n) == For:
+            self.remove_if_and_barrier_stmts(n.stmt, 0)
 
-    def append_result_stmt(self, n):
-        if not self.result_position:
-            # append result stmt after "refactored" for stmt
-            for stmt in self.result_stmt:
-                n.block_items.append(stmt)
-        elif type(self.result_position) == Compound:
-            # also append result stmt after "refactored" for stmt
-            for stmt in self.result_stmt:
-                self.result_position.block_items.append(stmt)
-        else:
-            _pos = self.result_position.stmt
-            _block_items = [_pos]
-            for stmt in self.result_stmt:
-                _block_items.append(stmt)
-            self.result_position.stmt = vc_ast.Compound(block_items=_block_items)
-        self.result_stmt = []
-        self.result_position = None
+    def append_result_stmt(self):
+        if self.result_stmt:
+            _stmt, _root = self.result_stmt.pop()
+            if type(_root) == Compound:
+                _root.block_items.append(_stmt)
+            else:
+                _pos = _root.stmt
+                if type(_pos) == Compound:
+                    _pos.block_items.append(_stmt)
+                else:
+                    _block_items = [_pos, _stmt]
+                    _root.stmt = vc_ast.Compound(block_items=_block_items)
 
     def loop_invariant_code_motion(self, n):
         """
@@ -506,13 +564,14 @@ class vcTransform(object):
         # Normally, inside a 'vload4' Call. Otherwise, there is nothing to do
         _invariant = False
         _iname = self.induction_var[0].name
-        if type(n.rvalue) == FuncCall:
-            _exp_list = n.rvalue.args.exprs
-            if len(_exp_list) == 2:
-                _exp = _exp_list[1].expr
-                if type(_exp) == ArrayRef:
-                    _depend, _ = self.induction_var_dependence(_exp.subscript, _iname)
-                    _invariant = not _depend
+        if type(n) == Assignment:
+            if type(n.rvalue) == FuncCall:
+                _exp_list = n.rvalue.args.exprs
+                if len(_exp_list) == 2:
+                    _exp = _exp_list[1].expr
+                    if type(_exp) == ArrayRef:
+                        _depend, _ = self.induction_var_dependence(_exp.subscript, _iname)
+                        _invariant = not _depend
         return _invariant
 
     def visit(self, node):
@@ -542,29 +601,29 @@ class vcTransform(object):
         self.add_definition(n.type.declname, n.type)
 
     def visit_FuncDef(self, n):
-        self.push(n)
+        self.push_stack(n)
         self.visit(n.decl)
         self.block_stmt = n.body
+        self.position.append(n.body)
         self.visit(n.body)
         if self.success:
-            # navigate through body to remove marked if stmts
-            # and also unnecessary barriers
-            self.remove_if_and_barrier_stmts(n.body, 0)
             # navigate through body to replace 'selected for' stmt
             self.swap_for(n.body, 0)
             # next, append result_stmt. Normally it goes to the final
             # of kernel's body, unless the removed for is a loop nest
-            self.append_result_stmt(n.body)
-            # finally, execute loop invariant code motion
+            self.append_result_stmt()
+            # execute loop invariant code motion
             self.loop_invariant_code_motion(n.body)
-        self.pop()
+            # finally, navigate through body to remove marked if stmts
+            # and also unnecessary barriers
+            self.remove_if_and_barrier_stmts(n.body, 0)
+            self.pop_stack()
 
     def visit_FuncCall(self,n):
         _name = self.visit(n.name)
         if _name == 'barrier':
-            if not self.inside_region:
-                n.remove = True
-                n.visited = True
+            n.remove = True
+            n.visited = True
 
     def visit_DeclList(self, n):
         for dcl in n.decls:
@@ -601,43 +660,51 @@ class vcTransform(object):
             of statements in the context of candidate loop.
         """
         if type(n) == For:
-            # initialize the remove condition
-            # If the loop satisfies the conditions to be unrolled.
-            # then, the stmts will be replace by vectorized stmts
             self.visit_For(n)
-            self.inside_region=False
+            if self.init_stmt:
+                _pos = self.position[-1]
+                _stmt = _pos.stmt
+                if not (type(_stmt) == Compound):
+                    _stmt = vc_ast.Compound (
+                        block_items=[_pos.stmt])
+                _stmt.block_items.insert(0, self.init_stmt)
+                _pos.stmt = _stmt
+            self.loop_candidate = None
+            self.init_stmt = None
         else:
             self.visit(n)
 
     def visit_For(self, n):
-        # Include Induction var(s) on defuselist
+        # Include Induction var(s) on defuse_list
         if n.init: self.visit(n.init)
         # Step must be (+= 1)
         if n.next:
             _single_step = self.visit_ForNext(n.next)
-        # Check through condition if 'for stmt' is the
-        # candidate to be vectorized
-        if _single_step:
-            if n.cond:
-                self.inside_region=self.visit_ForCondition(n.cond)
-        # set the remove condition flag
-        n.remove = self.inside_region
+        # Check through condition if 'for stmt' is candidate to be vectorized
+        if _single_step and n.cond:
+            self.loop_candidate = self.visit_ForCondition(n)
+        if self.loop_candidate:
+            # set the remove condition flag
+            n.remove = True
+        if not n.remove:
+            # push the for stmt into position stack
+            self.position.append(n)
         self.visit_stmt(n.stmt)
-        if self.inside_region:
+        if self.loop_candidate:
             # Visit stmts again to do refactoring
             self.visit_stmt(n.stmt)
             self.success = True
 
     def visit_ForCondition(self, n):
-        if isinstance(n.right, Constant):
-            _value = int(n.right.value)
-            if ((_value == 3) and (n.op == '<=')) or \
-               ((_value == 4) and (n.op == '<')):
-                # Found the loop
-                self.induction_var = self.lookup(n.left.name)
-                return True
+        if isinstance(n.cond.right, Constant):
+            _value = int(n.cond.right.value)
+            if ((_value == 3) and (n.cond.op == '<=')) or \
+               ((_value == 4) and (n.cond.op == '<')):
+                # Found the loop candidate
+                self.induction_var = self.lookup(n.cond.left.name)
+                return n
             else:
-                return False
+                return None
         return False
 
     def visit_ForNext(self, n):
@@ -663,12 +730,13 @@ class vcTransform(object):
                     n.remove = self.check_init_for_result_loc(n.iftrue)
 
     def visit_Assignment(self, n):
-        if n.refactor and self.inside_region:
+        if n.refactor and self.loop_candidate:
             self.refactoring(n)
             n.refactor = False
         else:
             # This assignment will be refactored?
-            n.refactor = self.inside_region
+            if self.loop_candidate:
+                n.refactor = True
             _ldefuse = None
             _loc= n.lvalue
             _rval = n.rvalue
@@ -691,8 +759,10 @@ class vcTransform(object):
                             _depend = False
                         # Check if assignment operation is dyadic
                         _dyadic = self.is_dyadic_operator(_op)
-                        # look for some initialization
+                        # set init flag to verify if there is some initialization
+                        # also, preserve this information to treat dyadic operations
                         _init = _dyadic and not _depend
+                        _ldefuse[0].has_initial_value = _init
                         # Insert a Decl stmt for the vector location in AST
                         self.insert_decl(_name, _ldefuse, _init)
             if n.refactor:

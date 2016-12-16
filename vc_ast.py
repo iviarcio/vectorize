@@ -135,7 +135,10 @@ class ArrayRef(Node):
         self.coord = coord
 
     def __eq__(self, other):
-        return (self.name == other.name) and (self.subscript == other.subscript)
+        if type(other) == ArrayRef:
+            return (self.name == other.name) and (self.subscript == other.subscript)
+        else:
+            return False
 
     def children(self):
         nodelist = []
@@ -156,6 +159,12 @@ class Assignment(Node):
         self.refactor = None
         self.visited = False
 
+    def __eq__(self, other):
+        if type(other) == Assignment:
+            return (self.op == other.op) and (self.lvalue == other.lvalue) and (self.rvalue == other.rvalue)
+        else:
+            return False
+
     def children(self):
         nodelist = []
         if self.lvalue is not None: nodelist.append(("lvalue", self.lvalue))
@@ -173,7 +182,10 @@ class BinaryOp(Node):
         self.coord = coord
 
     def __eq__(self, other):
-        return (self.op == other.op) and (self.left == other.left) and (self.right == other.right)
+        if type(other) == BinaryOp:
+            return (self.op == other.op) and (self.left == other.left) and (self.right == other.right)
+        else:
+            return False
 
     def children(self):
         nodelist = []
@@ -263,7 +275,10 @@ class Constant(Node):
         self.vector_locs = []
 
     def __eq__(self, other):
-        return (self.type == other.type) and (self.value == other.value)
+        if type(other) == Constant:
+            return (self.type == other.type) and (self.value == other.value)
+        else:
+            return False
 
     def children(self):
         nodelist = []
@@ -531,7 +546,10 @@ class ID(Node):
         self.coord = coord
 
     def __eq__(self, other):
-        return self.name == other.name
+        if type(other) == ID:
+            return self.name == other.name
+        else:
+            return False;
 
     def children(self):
         nodelist = []
@@ -773,7 +791,10 @@ class UnaryOp(Node):
         self.coord = coord
 
     def __eq__(self, other):
-        return (self.op == other.op) and (self.expr == other.expr)
+        if type(other) == UnaryOp:
+            return (self.op == other.op) and (self.expr == other.expr)
+        else:
+            return False
 
     def children(self):
         nodelist = []
