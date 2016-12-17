@@ -311,6 +311,7 @@ class Decl(Node):
         self.vector_locs = []
         self.visited = False
         self.has_initial_value = False
+        self.single_assignment = False
 
     def children(self):
         nodelist = []

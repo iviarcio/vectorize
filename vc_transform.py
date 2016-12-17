@@ -24,7 +24,7 @@ class DefUseChain(dict):
         super().__init__()
 
     def add(self, name, value):
-        # Insert the definition of a name
+        # Inserts the definition of a name
         self[name] = [value]
 
     def lookup(self, name):
@@ -72,7 +72,7 @@ class vcTransform(object):
             Indicates the for stmt that are candidate to be vectorized
         param: declarations:
             list of declarations that will be inserted after kernel
-            declarations.
+            declarations
         param: vector_type:
             A dictionary that maps raw types to vector types.
         """
@@ -90,6 +90,19 @@ class vcTransform(object):
         self.vector_id = 0
         self.loop_candidate = None
         self.vector_type = {'int': 'int4', 'long': 'long4', 'float': 'float4', 'double': 'double4'}
+
+    @staticmethod
+    def is_dyadic_operator(op):
+        return (op == '+=') or (op == '-=') or (op == '*=') or (op == '/=')
+
+    @staticmethod
+    def get_init_stmt(defuse_loc):
+        if len(defuse_loc) > 2:
+            _stmt = defuse_loc[1]
+            if type(_stmt) == Assignment:
+                if _stmt.op == '=' and type(_stmt.rvalue) == Constant:
+                    return _stmt
+        return None
 
     def push_stack(self, enclosure):
         self.stack.append(DefUseChain())
@@ -193,8 +206,9 @@ class vcTransform(object):
         self.refact_stmts.append((vc_ast.Assignment('=', _w, _expr), self.loop_candidate))
 
     def induction_var_dependence(self, n, iname):
-        # return True if the Array var subscript depends on induction_var
-        # Also return the kind of dependence (row or col) based on operator
+        """ Returns True if the array var subscript depends on induction_var
+            Also returns the kind of dependence (row or col) based on operator
+        """
         if type(n) == ID:
             return (n.name == iname), ''
         elif type(n) == UnaryOp:
@@ -210,10 +224,6 @@ class vcTransform(object):
         else:
             return False, ''
 
-    @staticmethod
-    def is_dyadic_operator(op):
-        return (op == '+=') or (op == '-=') or (op == '*=') or (op == '/=')
-
     def get_raw_type(self, decl):
         if type(decl.type) == PtrDecl:
             return self.get_raw_type(decl.type)
@@ -226,23 +236,15 @@ class vcTransform(object):
                 return self.get_raw_type(_decl[0])
             else:
                 return _name
-        # Otherwise
-        return None
-
-    def get_init_stmt(self, defuse_loc):
-        if len(defuse_loc) > 2:
-            _stmt = defuse_loc[1]
-            if type(_stmt) == Assignment:
-                if _stmt.op == '=' and type(_stmt.rvalue) == Constant:
-                    return _stmt
         return None
 
     def get_init_val(self, defuse_loc):
-        # If the array location was initialized, then the
-        # first assign statement contains the init value.
-        # If the value is not constant, a default value is
-        # used instead, but in this case, the dyadic
-        # operator must be reserved in final assignment
+        """ If the array location was initialized, then the
+            first assign statement contains the init value.
+            If the value is not constant, a default value is
+            used instead, but in this case, the dyadic
+            operator must be preserved in final assignment
+        """
         _stmt = self.get_init_stmt(defuse_loc)
         if _stmt:
             return _stmt.rvalue.value
@@ -261,7 +263,7 @@ class vcTransform(object):
             type=self.create_identifier(vdecl))
 
     def insert_declaration_stmts(self):
-        # insert the declaration stmts into kernel body
+        """ insert the declaration stmts into kernel body """
         _block_items = self.block_stmt.block_items
         _index = 0
         while type(_block_items[_index]) == Decl:
@@ -280,7 +282,7 @@ class vcTransform(object):
                         _pos.stmt = vc_ast.Compound(block_items=[_st, _pos.stmt])
 
     def insert_cte_decl(self, name, ctype, value):
-        # create a constant vector declaration
+        """ create a constant vector declaration """
         _cte = vc_ast.Constant(ctype, value)
         _initlist = vc_ast.InitList(
             exprs=[_cte, _cte, _cte, _cte])
@@ -326,6 +328,18 @@ class vcTransform(object):
             lvalue=_lvalue,
             rvalue=_rvalue)
 
+    def must_be_single_assignment(self, defuse_loc, forstmt):
+        if len(defuse_loc) > 2:
+            _stmt = defuse_loc[1]
+            if type(_stmt) == Assignment:
+                if self.is_dyadic_operator(_stmt.op) and type(_stmt.rvalue) == Constant:
+                    # check if the assignment is inside the for loop (one level only)
+                    if type(forstmt.stmt) == Compound:
+                        for st in forstmt.stmt.block_items:
+                            if st == _stmt:
+                                return True
+        return False
+
     def treat_init_assignment(self, name, defuse_loc):
         _for_stmt = self.position[-1]
         _init_stmt = self.get_init_stmt(defuse_loc)
@@ -346,12 +360,21 @@ class vcTransform(object):
                         return False
             return True
         else:
-            # There is no explicity initial value. However, dyadic operator was used
-            # in the assignment inside current for stmt. In this case, if the father
-            # if a for stmt, an initialization must be created there. Otherwise, returns
-            # true and a declaration will be created with initialization.
+            # There is no explicit initialization value. However, dyadic operator is
+            # used in the current assignment. There are two situations to take care:
+            # (1) Normally, vector initialization will be created together with decl
+            # stmt unless the current stmt is in a loop nest. In this case, initial
+            # value goes one level up;
+            # (2) However, there is an condition where initialization is not necessary:
+            # if inside the current for stmt, the array vector was used before the
+            # current one with dyadic operation, for example:  v[...] *= cte;
+            if self.must_be_single_assignment(defuse_loc, _for_stmt):
+                # single_assignment is used to signal that a simple assignment
+                # operation must be used due to an earlier dyadic assignment
+                defuse_loc[0].single_assignment = True
+                return False
             _pos = self.position[-2]
-            if type (_pos) == For:
+            if type(_pos) == For:
                 _init_assignment = self.create_init_assignment(name, defuse_loc)
                 self.init_stmts.append((_init_assignment , _pos))
                 return False
@@ -387,7 +410,6 @@ class vcTransform(object):
 
         _declaration.visited = True
         self.declarations.append(_declaration)
-        #self.insert_stmt(_declaration)
 
     def generate_expr(self, n):
         if type(n) == BinaryOp:
@@ -402,7 +424,7 @@ class vcTransform(object):
             if not _name:
                 # Create a new vector location
                 _name = self.create_vector_location()
-                 # Associate the vector_location with ArrayRef expression
+                # Associate the vector_location with ArrayRef expression
                 _ldefuse[0].vector_locs.append((_name, n))
                 # insert a declaration for the vector_location on AST
                 self.insert_decl(_name, _ldefuse)
@@ -430,7 +452,13 @@ class vcTransform(object):
         _rvalue = self.generate_r_stmt(_rval, _typename)
         # create refact stmt for lvalue (loc)
         _lvalue = self.generate_l_stmt(_loc, _name, _op)
-        self.refact_stmts.append((vc_ast.Assignment(n.op, _lvalue, _rvalue), self.loop_candidate))
+        # If single assignment was set, change the assignment operator
+        if _ldefuse[0].single_assignment:
+            _op = '='
+        else:
+            _op = n.op
+        self.refact_stmts.append((vc_ast.Assignment(_op, _lvalue, _rvalue), self.loop_candidate))
+        _ldefuse[0].single_assignment = False
 
     def generate_l_stmt(self, lvalue, rname, op):
         _rid = vc_ast.ID(rname)
@@ -565,9 +593,8 @@ class vcTransform(object):
 
     def loop_invariant_code_motion(self, n):
         """
-        Move to outside, stmts inside loops that are independent
-        of the loop induction var, i.e., the expression is
-        invariant inside the loop
+            Move to outside stmts inside loops that are independent of the loop
+            induction var, i.e., the expression is invariant inside the loop
         """
         _stmt_list = n.block_items
         # navigate to stmts until found a loop stmt. Also hold
@@ -587,8 +614,9 @@ class vcTransform(object):
                             _pos += 1
 
     def is_invariant(self, n):
-        # After transformation, invariant ArrayRefs only appears at the right
-        # Normally, inside a 'vload4' Call. Otherwise, there is nothing to do
+        """ After transformation, invariant ArrayRefs only appears at the right
+            Normally, inside a 'vload4' Call. Otherwise, there is nothing to do
+        """
         _invariant = False
         _iname = self.induction_var[0].name
         if type(n) == Assignment:
