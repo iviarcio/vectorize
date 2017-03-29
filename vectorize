@@ -15,8 +15,8 @@ import os
 import sys
 sys.path.append(os.environ['LLVM_INCLUDE_PATH'] + '/vectorize')
 
-from vc_parser import vcParser
-from vc_transform import vcTransform
+from vc_parser import vcParser, ParseError
+from vc_transform import VcTransform, TransformError
 from vc_code import vcCode
 
 
@@ -44,14 +44,14 @@ class Compiler:
 
     def _transform(self, asm_file, out_file):
         """ Generate the OpenCl kernel from AST with vector statements. """
-        self.transform = vcTransform()
+        self.transform = VcTransform()
         self.transform.visit(self.ast)
         if asm_file:
             self.ast.show(buf=asm_file, showcoord=True)
         self.code = vcCode()
-        clcode = self.code.visit(self.ast)
         if out_file:
-            out_file.write(clcode)
+            __clcode = self.code.visit(self.ast)
+            out_file.write(__clcode)
 
     def _do_compile(self, out_file, ast_file, asm_file, debuglevel):
         """ Compiles the code to the given file object. """
@@ -68,11 +68,13 @@ class Compiler:
         self.code = code
         try:
             self._do_compile(outfile, astfile, asmfile, debuglevel)
-        except self.parser.ParseError:
+        except ParseError:
+            self.total_errors += 1
             if not silent:
                 print(",vectorize> Errors encountered.")
             return False
-        except Compiler.CompileError:
+        except (Compiler.CompileError, TransformError):
+            self.total_errors += 1
             self._print_stats(silent)
             if not silent:
                 print("<vectorize> Errors encountered.")

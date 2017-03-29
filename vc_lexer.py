@@ -95,7 +95,7 @@ class vcLexer(object):
 
     # Reserved keywords
     keywords = (
-        '_BOOL', '_COMPLEX', 'AUTO', 'BREAK', 'CASE', 'CHAR', 'CONST',
+        '_BOOL', '_COMPLEX', 'AUTO', 'BOOL', 'BREAK', 'CASE', 'CHAR', 'CONST',
         'CONTINUE', 'DEFAULT', 'DO', 'DOUBLE', 'ELSE', 'ENUM', 'EXTERN',
         'FLOAT', 'FLOAT4', 'FOR', 'GOTO', 'IF', 'INLINE', 'INT', 'INT4',
         'LONG', 'LONG4', 'DOUBLE4', 'REGISTER', 'OFFSETOF',

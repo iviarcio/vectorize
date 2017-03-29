@@ -14,6 +14,11 @@ import vc_ast
 from vc_ast import *
 
 
+class TransformError(Exception):
+    """ Exception raised when there's been an error on Vectorization pass. """
+    pass
+
+
 class DefUseChain(dict):
     """ Class representing ArrayRef locations. The class should
         provide functionality for adding and looking up nodes
@@ -32,7 +37,7 @@ class DefUseChain(dict):
         return self.get(name, None)
 
 
-class vcTransform(object):
+class VcTransform(object):
     """ Uses the same visitor pattern as vc_ast.NodeVisitor.
         While traversing the AST do:
         1) Mark some statements to be removed or to be refactored
@@ -253,8 +258,11 @@ class vcTransform(object):
         return '0.'
 
     def create_identifier(self, decl):
-        return vc_ast.IdentifierType(
-            names=[self.vector_type[self.get_raw_type(decl)]])
+        try:
+            return vc_ast.IdentifierType(
+                names=[self.vector_type[self.get_raw_type(decl)]])
+        except:
+            raise TransformError
 
     def create_typedecl(self, name, vdecl):
         return vc_ast.TypeDecl(
@@ -603,7 +611,7 @@ class vcTransform(object):
             if type(_kst) == For:
                 self.induction_var = self.lookup(_kst.init.decls[0].name)
                 _fst = _kst.stmt
-                if type (_fst) == Compound:
+                if type(_fst) == Compound:
                     for _pos, _ast in enumerate(_fst.block_items):
                         # Look for all ArrayRefs in this assignment
                         # and check if it's invariant

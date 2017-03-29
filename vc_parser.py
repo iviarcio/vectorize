@@ -13,6 +13,7 @@ import vc_ast
 from vc_lexer import vcLexer
 from vc_utils import fix_switch_cases
 
+
 class Coord(object):
     """ Coordinates of a syntactic element. Consists of:
             - File name
@@ -31,8 +32,10 @@ class Coord(object):
         if self.column: str += ":%s" % self.column
         return str
 
+
 class ParseError(Exception):
     pass
+
 
 class PLYParser(object):
     def _create_opt_rule(self, rulename):
@@ -508,8 +511,8 @@ class vcParser(PLYParser):
         ('left', 'TIMES', 'DIVIDE', 'MOD')
     )
 
-    ## Grammar productions
-    ## Implementation of the BNF defined in K&R2 A.13
+    # Grammar productions
+    # Implementation of the BNF defined in K&R2 A.13
 
     # Wrapper around a translation unit, to allow for empty input.
     # Not strictly part of the C99 Grammar, but useful in practice.
@@ -742,6 +745,7 @@ class vcParser(PLYParser):
     def p_type_specifier_1(self, p):
         """ type_specifier  : VOID
                             | _BOOL
+                            | BOOL
                             | CHAR
                             | SHORT
                             | INT
