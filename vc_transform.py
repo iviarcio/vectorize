@@ -436,6 +436,10 @@ class VcTransform(object):
                 _ldefuse[0].vector_locs.append((_name, n))
                 # insert a declaration for the vector_location on AST
                 self.insert_decl(_name, _ldefuse)
+        elif type(n) == FuncCall:
+            # FuncCall inside expression is not supported for vector
+            # transformation. Abort the process
+            raise TransformError
         else:
             return
 
@@ -796,7 +800,7 @@ class VcTransform(object):
             if self.loop_candidate:
                 n.refactor = True
             _ldefuse = None
-            _loc= n.lvalue
+            _loc = n.lvalue
             _rval = n.rvalue
             _op = n.op
             if type(_loc) == ArrayRef:
